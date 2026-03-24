@@ -274,15 +274,12 @@ function buildDerivedSignals<
       const result = entry.fn({ state, input, signal: currentAc.signal });
 
       if (!(result instanceof Promise)) {
-        // sync — write immediately while still inside the effect (tracking active)
-        // pause tracking so env doesn't become a dependency of this effect
         const prevSub = setActiveSub(undefined);
         env({ loading: false, value: result as unknown, error: undefined });
         setActiveSub(prevSub);
         return;
       }
 
-      // async path — same as before
       const prevSub = setActiveSub(undefined);
       const prevVal = env();
       env({ loading: true, value: prevVal.value, error: undefined });
@@ -309,8 +306,6 @@ function buildDerivedSignals<
     });
   }
 
-  // proxy reads env() reactively — when render effect reads derived.x,
-  // it subscribes to that envelope signal and re-renders on resolve
   const proxy = new Proxy({} as IslandDerived<TDerivedMap>, {
     get(_, key: string) {
       const env = envelopes.get(key);
@@ -320,6 +315,90 @@ function buildDerivedSignals<
   });
 
   return { proxy, stop: () => stops.forEach((s) => s()) };
+}
+
+// ─────────────────────────────────────────────
+// Bind
+// ─────────────────────────────────────────────
+
+type BindTransform<V> = (raw: string) => V;
+
+interface BindEntry<TStateMap extends Record<string, unknown>> {
+  selector: string;
+  stateKey: keyof TStateMap & string;
+  transform?: BindTransform<unknown>;
+}
+
+/**
+ * Determine which DOM property to read/write and which event to listen to
+ * for a given input element.
+ */
+function resolveBindConfig(el: Element): {
+  prop: "value" | "checked" | "valueAsNumber";
+  event: string;
+  read: (el: Element) => unknown;
+  write: (el: Element, value: unknown) => void;
+} {
+  const tag = el.tagName.toLowerCase();
+  const type = (el as HTMLInputElement).type?.toLowerCase() ?? "";
+
+  if (tag === "input" && type === "checkbox") {
+    return {
+      prop: "checked",
+      event: "change",
+      read: (el) => (el as HTMLInputElement).checked,
+      write: (el, v) => ((el as HTMLInputElement).checked = Boolean(v)),
+    };
+  }
+
+  if (tag === "input" && type === "number") {
+    return {
+      prop: "valueAsNumber",
+      event: "input",
+      read: (el) => (el as HTMLInputElement).valueAsNumber,
+      write: (el, v) => ((el as HTMLInputElement).value = String(v ?? "")),
+    };
+  }
+
+  // text, email, password, search, tel, url, textarea, select
+  return {
+    prop: "value",
+    event: tag === "select" ? "change" : "input",
+    read: (el) => (el as HTMLInputElement).value,
+    write: (el, v) => ((el as HTMLInputElement).value = String(v ?? "")),
+  };
+}
+
+function applyBindings<TStateMap extends Record<string, unknown>>(
+  el: Element,
+  bindings: BindEntry<TStateMap>[],
+  state: IslandState<TStateMap>,
+): () => void {
+  const cleanups: Array<() => void> = [];
+
+  for (const binding of bindings) {
+    const targets =
+      binding.selector === "" ? [el] : Array.from(el.querySelectorAll<Element>(binding.selector));
+
+    for (const target of targets) {
+      const { event, read, write } = resolveBindConfig(target);
+      const accessor = state[binding.stateKey] as SignalAccessor<unknown>;
+
+      // state → DOM: sync current state value into the element on (re-)mount
+      write(target, accessor());
+
+      // DOM → state: update signal when the user changes the element
+      const listener = () => {
+        const raw = read(target);
+        const value = binding.transform ? binding.transform(String(raw)) : raw;
+        accessor(value);
+      };
+      target.addEventListener(event, listener);
+      cleanups.push(() => target.removeEventListener(event, listener));
+    }
+  }
+
+  return () => cleanups.forEach((c) => c());
 }
 
 // ─────────────────────────────────────────────
@@ -379,7 +458,6 @@ interface StateEntry<TInput> {
 
 // ─────────────────────────────────────────────
 // Event modifier parsing
-// Supports: selector@event:once:capture:passive
 // ─────────────────────────────────────────────
 
 interface ParsedOn {
@@ -468,6 +546,7 @@ class IlhaBuilder<
     private readonly _effects: EffectEntry<TInput, TStateMap>[],
     private readonly _slots: Record<string, AnyIsland>,
     private readonly _transition: TransitionOptions | null,
+    private readonly _binds: BindEntry<TStateMap>[],
   ) {}
 
   input<S extends StandardSchemaV1>(
@@ -483,7 +562,7 @@ class IlhaBuilder<
       Record<string, never>,
       Record<string, never>,
       Record<string, never>
-    >(schema, [], [], [], [], {}, null);
+    >(schema, [], [], [], [], {}, null, []);
   }
 
   state<K extends string, V>(
@@ -498,6 +577,7 @@ class IlhaBuilder<
       this._effects as unknown as EffectEntry<TInput, TStateMap & Record<K, V>>[],
       this._slots,
       this._transition,
+      this._binds as unknown as BindEntry<TStateMap & Record<K, V>>[],
     );
   }
 
@@ -513,6 +593,31 @@ class IlhaBuilder<
       this._effects,
       this._slots,
       this._transition,
+      this._binds,
+    );
+  }
+
+  bind<K extends keyof TStateMap & string>(
+    selector: string,
+    stateKey: K,
+    transform?: BindTransform<TStateMap[K]>,
+  ): IlhaBuilder<TInput, TStateMap, TDerivedMap, TSlots> {
+    return new IlhaBuilder<TInput, TStateMap, TDerivedMap, TSlots>(
+      this._schema,
+      this._states,
+      this._deriveds,
+      this._ons,
+      this._effects,
+      this._slots,
+      this._transition,
+      [
+        ...this._binds,
+        {
+          selector,
+          stateKey,
+          transform: transform as BindTransform<unknown> | undefined,
+        },
+      ],
     );
   }
 
@@ -543,6 +648,7 @@ class IlhaBuilder<
       this._effects,
       this._slots,
       this._transition,
+      this._binds,
     );
   }
 
@@ -557,6 +663,7 @@ class IlhaBuilder<
       [...this._effects, { fn }],
       this._slots,
       this._transition,
+      this._binds,
     );
   }
 
@@ -572,6 +679,7 @@ class IlhaBuilder<
       this._effects,
       { ...this._slots, [name]: island },
       this._transition,
+      this._binds,
     );
   }
 
@@ -584,6 +692,7 @@ class IlhaBuilder<
       this._effects,
       this._slots,
       opts,
+      this._binds,
     );
   }
 
@@ -597,6 +706,7 @@ class IlhaBuilder<
     const effects = this._effects;
     const slotDefs = this._slots;
     const transition = this._transition;
+    const binds = this._binds;
 
     function resolveInput(props?: Partial<TInput>): TInput {
       const value = props ?? {};
@@ -775,6 +885,12 @@ class IlhaBuilder<
       el.innerHTML = fn({ state, derived, input, slots });
       attachListeners();
 
+      // ── Bind ──────────────────────────────────────────────────────────────
+      // Applied after initial render so elements exist in the DOM.
+      // Re-applied after every re-render inside the render effect below.
+      let stopBindings = applyBindings(el, binds as BindEntry<TStateMap>[], state);
+      cleanups.push(() => stopBindings());
+
       // ── Mount child islands ───────────────────────────────────────────────
       for (const [name, childIsland] of Object.entries(slotDefs)) {
         const slotEl = el.querySelector(`[${SLOT_ATTR}="${name}"]`);
@@ -811,9 +927,12 @@ class IlhaBuilder<
         }
         snapshotSlots();
         detachListeners();
+        stopBindings();
         el.innerHTML = html;
         restoreSlots();
         attachListeners();
+        // Re-apply bindings now that new DOM elements exist
+        stopBindings = applyBindings(el, binds as BindEntry<TStateMap>[], state);
       });
       cleanups.push(stopRender);
       cleanups.push(detachListeners);
@@ -941,7 +1060,7 @@ const rootBuilder = new IlhaBuilder<
   Record<string, never>,
   Record<string, never>,
   Record<string, never>
->(null, [], [], [], [], {}, null);
+>(null, [], [], [], [], {}, null, []);
 
 const ilha = Object.assign(rootBuilder, {
   html: ilhaHtml,

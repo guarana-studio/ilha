@@ -49,6 +49,7 @@ Every island is built with a chainable builder. All methods return a new builder
 | `.input(schema)`                | Declare typed props via any Standard Schema validator              |
 | `.state(key, init)`             | Add a reactive signal; `init` can be a value or `(input) => value` |
 | `.derived(key, fn)`             | Derive reactive data from state/input — sync or async              |
+| `.bind(selector, stateKey)`     | Two-way bind a form element to a state key                         |
 | `.on(selector@event, handler)`  | Attach a delegated event listener                                  |
 | `.effect(fn)`                   | Run a reactive side effect on mount; return a cleanup function     |
 | `.slot(name, island)`           | Nest a child island                                                |
@@ -65,6 +66,48 @@ The `.on()` selector string uses `selector@event` syntax with optional modifiers
 .on("[data-btn]@click:once", handler)              // fires once
 .on("[data-btn]@click:passive:capture", handler)
 ```
+
+## Two-way binding
+
+`.bind(selector, stateKey)` creates a two-way link between a form element and a state key — no event handler boilerplate needed:
+
+```ts
+const form = ilha
+  .state("email", "")
+  .state("subscribe", false)
+  .bind("[data-email]", "email")
+  .bind("[data-sub]", "subscribe")
+  .render(
+    ({ state }) => html`
+      <input data-email value="${state.email()}" />
+      <input type="checkbox" data-sub ${state.subscribe() ? "checked" : ""} />
+      <p>Email: ${state.email()}, Subscribe: ${state.subscribe()}</p>
+    `,
+  );
+```
+
+Both directions are handled automatically:
+
+- **DOM → state** — when the user types or toggles, the signal updates immediately
+- **state → DOM** — when the signal changes programmatically, the element's value/checked syncs
+
+Element types and their behaviour:
+
+| Element                  | Event              | Property         |
+| ------------------------ | ------------------ | ---------------- |
+| `input` (text, email, …) | `input`            | `.value`         |
+| `input[type=number]`     | `input`            | `.valueAsNumber` |
+| `input[type=checkbox]`   | `change`           | `.checked`       |
+| `select`, `textarea`     | `change` / `input` | `.value`         |
+
+An optional third argument coerces the raw DOM string before writing to state:
+
+```ts
+.bind("[data-age]", "age", Number)   // input string → number state
+.bind("[data-tags]", "tags", (v) => v.split(",").map((s) => s.trim()))
+```
+
+`.bind()` is a no-op during SSR — it only activates on mount.
 
 ## Derived data
 
@@ -124,7 +167,7 @@ The `fn` passed to `.derived()` receives:
 
 ```ts
 ({ state, input, signal }) => ...
-//          ^^^^^^  AbortSignal — only meaningful for async
+//                ^^^^^^  AbortSignal — only meaningful for async
 ```
 
 ## Slots

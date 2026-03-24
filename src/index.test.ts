@@ -1592,4 +1592,313 @@ describe("ilha.mount()", () => {
       cleanup(el);
     });
   });
+
+  // ─────────────────────────────────────────────
+  // .bind()
+  // ─────────────────────────────────────────────
+
+  describe(".bind()", () => {
+    // ── SSR ──────────────────────────────────────────────────────────────────
+
+    it("SSR: .bind() is a no-op — island renders normally", () => {
+      const island = ilha
+        .state("email", "default@example.com")
+        .bind("[data-email]", "email")
+        .render(({ state }) => `<input data-email value="${state.email()}" />`);
+
+      expect(island()).toBe(`<input data-email value="default@example.com" />`);
+    });
+
+    // ── DOM → state ───────────────────────────────────────────────────────────
+
+    it("client: text input change updates state (DOM → state)", () => {
+      const island = ilha
+        .state("name", "ada")
+        .bind("[data-name]", "name")
+        .render(({ state }) => `<input data-name value="${state.name()}" /><p>${state.name()}</p>`);
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLInputElement>("[data-name]")!.value = "grace";
+      el.querySelector<HTMLInputElement>("[data-name]")!.dispatchEvent(new Event("input"));
+
+      expect(el.querySelector("p")!.textContent).toBe("grace");
+
+      unmount();
+      cleanup(el);
+    });
+
+    it("client: checkbox change updates boolean state (DOM → state)", () => {
+      const island = ilha
+        .state("checked", false)
+        .bind("[data-cb]", "checked")
+        .render(
+          ({ state }) =>
+            `<input type="checkbox" data-cb ${state.checked() ? "checked" : ""} /><p>${state.checked()}</p>`,
+        );
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLInputElement>("[data-cb]")!.checked = true;
+      el.querySelector<HTMLInputElement>("[data-cb]")!.dispatchEvent(new Event("change"));
+
+      expect(el.querySelector("p")!.textContent).toBe("true");
+
+      unmount();
+      cleanup(el);
+    });
+
+    it("client: select change updates state (DOM → state)", () => {
+      const island = ilha
+        .state("size", "m")
+        .bind("[data-size]", "size")
+        .render(
+          ({ state }) =>
+            `<select data-size>
+              <option value="s">S</option>
+              <option value="m">M</option>
+              <option value="l">L</option>
+            </select>
+            <p>${state.size()}</p>`,
+        );
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLSelectElement>("[data-size]")!.value = "l";
+      el.querySelector<HTMLSelectElement>("[data-size]")!.dispatchEvent(new Event("change"));
+
+      expect(el.querySelector("p")!.textContent).toBe("l");
+
+      unmount();
+      cleanup(el);
+    });
+
+    it("client: number input updates numeric state (DOM → state)", () => {
+      const island = ilha
+        .state("count", 0)
+        .bind("[data-num]", "count")
+        .render(({ state }) => `<input type="number" data-num /><p>${state.count()}</p>`);
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLInputElement>("[data-num]")!.value = "42";
+      el.querySelector<HTMLInputElement>("[data-num]")!.dispatchEvent(new Event("input"));
+
+      expect(el.querySelector("p")!.textContent).toBe("42");
+
+      unmount();
+      cleanup(el);
+    });
+
+    // ── state → DOM ───────────────────────────────────────────────────────────
+
+    it("client: initial state is synced to input value on mount (state → DOM)", () => {
+      const island = ilha
+        .state("email", "hello@example.com")
+        .bind("[data-email]", "email")
+        .render(({ state }) => `<input data-email value="${state.email()}" />`);
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      expect(el.querySelector<HTMLInputElement>("[data-email]")!.value).toBe("hello@example.com");
+
+      unmount();
+      cleanup(el);
+    });
+
+    it("client: programmatic state change updates input value (state → DOM)", () => {
+      let accessor!: (v?: string) => string | void;
+
+      const island = ilha
+        .state("email", "a@b.com")
+        .bind("[data-email]", "email")
+        .render(({ state }) => {
+          accessor = state.email as typeof accessor;
+          return `<input data-email value="${state.email()}" />`;
+        });
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      accessor("new@example.com");
+
+      // re-query after re-render triggered by state change
+      expect(el.querySelector<HTMLInputElement>("[data-email]")!.value).toBe("new@example.com");
+
+      unmount();
+      cleanup(el);
+    });
+
+    it("client: programmatic state change updates checkbox checked (state → DOM)", () => {
+      let accessor!: (v?: boolean) => boolean | void;
+
+      const island = ilha
+        .state("active", false)
+        .bind("[data-cb]", "active")
+        .render(({ state }) => {
+          accessor = state.active as typeof accessor;
+          return `<input type="checkbox" data-cb ${state.active() ? "checked" : ""} />`;
+        });
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      expect(el.querySelector<HTMLInputElement>("[data-cb]")!.checked).toBe(false);
+
+      accessor(true);
+      expect(el.querySelector<HTMLInputElement>("[data-cb]")!.checked).toBe(true);
+
+      accessor(false);
+      expect(el.querySelector<HTMLInputElement>("[data-cb]")!.checked).toBe(false);
+
+      unmount();
+      cleanup(el);
+    });
+
+    // ── Two-way ───────────────────────────────────────────────────────────────
+
+    it("client: two-way — DOM change reflects in render output", () => {
+      const island = ilha
+        .state("query", "")
+        .bind("[data-q]", "query")
+        .render(({ state }) => `<input data-q /><p>${state.query()}</p>`);
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLInputElement>("[data-q]")!.value = "svelte";
+      el.querySelector<HTMLInputElement>("[data-q]")!.dispatchEvent(new Event("input"));
+      expect(el.querySelector("p")!.textContent).toBe("svelte");
+
+      // re-query — el.innerHTML was replaced by re-render, old reference is stale
+      el.querySelector<HTMLInputElement>("[data-q]")!.value = "ilha";
+      el.querySelector<HTMLInputElement>("[data-q]")!.dispatchEvent(new Event("input"));
+      expect(el.querySelector("p")!.textContent).toBe("ilha");
+
+      unmount();
+      cleanup(el);
+    });
+
+    // ── transform ─────────────────────────────────────────────────────────────
+
+    it("client: transform coerces DOM string to number", () => {
+      const island = ilha
+        .state("age", 0)
+        .bind("[data-age]", "age", Number)
+        .render(({ state }) => `<input type="text" data-age /><p>${state.age()}</p>`);
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLInputElement>("[data-age]")!.value = "25";
+      el.querySelector<HTMLInputElement>("[data-age]")!.dispatchEvent(new Event("input"));
+      expect(el.querySelector("p")!.textContent).toBe("25");
+
+      // re-query after re-render
+      el.querySelector<HTMLInputElement>("[data-age]")!.value = "99";
+      el.querySelector<HTMLInputElement>("[data-age]")!.dispatchEvent(new Event("input"));
+      expect(el.querySelector("p")!.textContent).toBe("99");
+
+      unmount();
+      cleanup(el);
+    });
+
+    // ── Cleanup ───────────────────────────────────────────────────────────────
+
+    it("client: unmount removes bind listeners — DOM changes no longer update state", () => {
+      const island = ilha
+        .state("val", "initial")
+        .bind("[data-val]", "val")
+        .render(({ state }) => `<input data-val value="${state.val()}" /><p>${state.val()}</p>`);
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLInputElement>("[data-val]")!.value = "changed";
+      el.querySelector<HTMLInputElement>("[data-val]")!.dispatchEvent(new Event("input"));
+      expect(el.querySelector("p")!.textContent).toBe("changed");
+
+      unmount();
+
+      // after unmount, DOM events must not propagate to state
+      // the input still exists in the DOM (we haven't called cleanup yet)
+      el.querySelector<HTMLInputElement>("[data-val]")!.value = "after-unmount";
+      el.querySelector<HTMLInputElement>("[data-val]")!.dispatchEvent(new Event("input"));
+      // innerHTML is frozen after unmount — <p> still shows "changed"
+      expect(el.querySelector("p")!.textContent).toBe("changed");
+
+      cleanup(el);
+    });
+
+    // ── Re-render survival ────────────────────────────────────────────────────
+
+    it("client: bind survives parent re-render triggered by other state", () => {
+      let tickAccessor!: (v?: number) => number | void;
+
+      const island = ilha
+        .state("tick", 0)
+        .state("email", "a@b.com")
+        .bind("[data-email]", "email")
+        .on("[data-inc]@click", ({ state }) => state.tick(state.tick() + 1))
+        .render(({ state }) => {
+          tickAccessor = state.tick as typeof tickAccessor;
+          return `<p>${state.tick()}</p>
+                  <input data-email value="${state.email()}" />
+                  <button data-inc>+</button>`;
+        });
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      // trigger re-render via unrelated state
+      tickAccessor(1);
+      expect(el.querySelector("p")!.textContent).toBe("1");
+
+      // bind must still work on freshly rendered elements
+      el.querySelector<HTMLInputElement>("[data-email]")!.value = "new@example.com";
+      el.querySelector<HTMLInputElement>("[data-email]")!.dispatchEvent(new Event("input"));
+
+      // re-query after re-render triggered by email state change
+      expect(el.querySelector<HTMLInputElement>("[data-email]")!.value).toBe("new@example.com");
+
+      unmount();
+      cleanup(el);
+    });
+
+    // ── Multiple binds ────────────────────────────────────────────────────────
+
+    it("client: multiple .bind() calls work independently", () => {
+      const island = ilha
+        .state("first", "")
+        .state("last", "")
+        .bind("[data-first]", "first")
+        .bind("[data-last]", "last")
+        .render(
+          ({ state }) =>
+            `<input data-first />
+             <input data-last />
+             <p>${state.first()} ${state.last()}</p>`,
+        );
+
+      const el = makeEl();
+      const unmount = island.mount(el);
+
+      el.querySelector<HTMLInputElement>("[data-first]")!.value = "Ada";
+      el.querySelector<HTMLInputElement>("[data-first]")!.dispatchEvent(new Event("input"));
+
+      // re-query after re-render from first dispatch
+      el.querySelector<HTMLInputElement>("[data-last]")!.value = "Lovelace";
+      el.querySelector<HTMLInputElement>("[data-last]")!.dispatchEvent(new Event("input"));
+
+      expect(el.querySelector("p")!.textContent).toBe("Ada Lovelace");
+
+      unmount();
+      cleanup(el);
+    });
+  });
 });
