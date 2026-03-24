@@ -8,7 +8,9 @@
     "playground": "bun playground/index.html",
     "lint": "oxlint",
     "fmt": "oxfmt",
-    "prepare": "husky"
+    "prepare": "husky",
+    "docs:dev": "bunx docsome dev DOCS.md",
+    "docs:build": "bunx docsome build DOCS.md"
   },
   "dependencies": {
     "alien-signals": "^3.1.2"
@@ -16,6 +18,7 @@
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.8.7",
     "@types/bun": "latest",
+    "docsome": "^0.0.6",
     "husky": "^9.1.7",
     "oxfmt": "^0.41.0",
     "oxlint": "^1.56.0",

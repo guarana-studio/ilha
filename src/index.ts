@@ -241,6 +241,34 @@ function makePlainDerived<TDerivedMap extends Record<string, unknown>>(
   return derived as IslandDerived<TDerivedMap>;
 }
 
+async function makeAsyncDerived<TDerivedMap extends Record<string, unknown>>(
+  entries: DerivedEntry<unknown, Record<string, unknown>>[],
+  state: Record<string, unknown>,
+  input: unknown,
+): Promise<IslandDerived<TDerivedMap>> {
+  const ac = new AbortController();
+  const derived: Record<string, DerivedValue<unknown>> = {};
+
+  await Promise.all(
+    entries.map(async (entry) => {
+      try {
+        const result = await Promise.resolve(
+          entry.fn({ state: state as never, input, signal: ac.signal }),
+        );
+        derived[entry.key] = { loading: false, value: result, error: undefined };
+      } catch (err) {
+        derived[entry.key] = {
+          loading: false,
+          value: undefined,
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
+    }),
+  );
+
+  return derived as IslandDerived<TDerivedMap>;
+}
+
 function buildDerivedSignals<
   TInput,
   TStateMap extends Record<string, unknown>,
@@ -321,17 +349,11 @@ function buildDerivedSignals<
 // Bind
 // ─────────────────────────────────────────────
 
-type BindTransform<V> = (raw: string) => V;
-
 interface BindEntry<TStateMap extends Record<string, unknown>> {
   selector: string;
   stateKey: keyof TStateMap & string;
 }
 
-/**
- * Determine which DOM property to read/write and which event to listen to
- * for a given input element.
- */
 function resolveBindConfig(el: Element): {
   prop: "value" | "checked" | "valueAsNumber";
   event: string;
@@ -359,7 +381,6 @@ function resolveBindConfig(el: Element): {
     };
   }
 
-  // text, email, password, search, tel, url, textarea, select
   return {
     prop: "value",
     event: tag === "select" ? "change" : "input",
@@ -383,16 +404,15 @@ function applyBindings<TStateMap extends Record<string, unknown>>(
       const { event, read, write } = resolveBindConfig(target);
       const accessor = state[binding.stateKey] as SignalAccessor<unknown>;
 
-      // state → DOM: sync current value into the element on (re-)mount
       write(target, accessor());
 
-      // DOM → state: coerce raw DOM value to match the state's current type
       const listener = () => {
         const raw = read(target);
         const currentVal = accessor();
         let value: unknown;
         if (typeof currentVal === "number") {
-          value = Number(raw);
+          const n = Number(raw);
+          value = isNaN(n) ? 0 : n;
         } else if (typeof currentVal === "boolean") {
           value = Boolean(raw);
         } else {
@@ -419,7 +439,7 @@ export type IslandState<TStateMap extends Record<string, unknown>> = {
 };
 
 export interface Island<TInput, TStateMap extends Record<string, unknown>> {
-  (props?: Partial<TInput>): string;
+  (props?: Partial<TInput>): string | Promise<string>;
   toString(props?: Partial<TInput>): string;
   mount(el: Element, props?: Partial<TInput>): () => void;
 }
@@ -604,7 +624,7 @@ class IlhaBuilder<
     );
   }
 
-  bind<V = TStateMap[keyof TStateMap]>(
+  bind(
     selector: string,
     stateKey: keyof TStateMap & string,
   ): IlhaBuilder<TInput, TStateMap, TDerivedMap, TSlots> {
@@ -714,18 +734,28 @@ class IlhaBuilder<
     }
 
     function makeSlotsProxy(ssr: boolean): SlotsProxy<TSlots> {
-      return new Proxy({} as SlotsProxy<TSlots>, {
-        get(_, name: string) {
-          if (!(name in slotDefs)) return makeSlotAccessor(() => "");
-          if (ssr) {
-            return makeSlotAccessor((props?: Record<string, unknown>) => slotDefs[name]!(props));
-          }
-          return makeSlotAccessor((props?: Record<string, unknown>) => {
-            const encodedProps = props ? ` ${SLOT_PROPS_ATTR}='${JSON.stringify(props)}'` : "";
-            return `<div ${SLOT_ATTR}="${name}"${encodedProps}></div>`;
-          });
+      return new Proxy(
+        {},
+        {
+          get(_, prop: string) {
+            const name = String(prop);
+            if (!slotDefs[name]) {
+              return makeSlotAccessor(() => "");
+            }
+
+            if (ssr) {
+              return makeSlotAccessor((props?: Record<string, unknown>) =>
+                slotDefs[name]!.toString(props),
+              );
+            }
+
+            return makeSlotAccessor((props?: Record<string, unknown>) => {
+              const json = props ? ` data-props='${escapeHtml(JSON.stringify(props))}'` : "";
+              return `<div data-ilha-slot="${escapeHtml(name)}"${json}></div>`;
+            });
+          },
         },
-      });
+      ) as SlotsProxy<TSlots>;
     }
 
     function buildPlainState(input: TInput): IslandState<TStateMap> {
@@ -765,7 +795,82 @@ class IlhaBuilder<
       return state as IslandState<TStateMap>;
     }
 
-    function renderToString(props?: Partial<TInput>): string {
+    // ── SSR render ────────────────────────────────────────────────────────────
+    // Returns a plain string if all deriveds are sync, or a Promise<string> if
+    // any derived is async. Callers can branch on the return type, or simply
+    // `await` it — awaiting a plain string is a no-op.
+
+    function renderToString(props?: Partial<TInput>): string | Promise<string> {
+      const input = resolveInput(props);
+      const state = buildPlainState(input);
+      const slots = makeSlotsProxy(true);
+
+      const results = deriveds.map((entry) => {
+        try {
+          return {
+            key: entry.key,
+            result: entry.fn({
+              state: state as never,
+              input,
+              signal: new AbortController().signal,
+            }),
+          };
+        } catch (err) {
+          return {
+            key: entry.key,
+            result: Promise.reject(err),
+          };
+        }
+      });
+
+      const hasAsync = results.some((r) => r.result instanceof Promise);
+
+      if (!hasAsync) {
+        const derived: Record<string, DerivedValue<unknown>> = {};
+        for (const r of results) {
+          derived[r.key] = {
+            loading: false,
+            value: r.result as unknown,
+            error: undefined,
+          };
+        }
+        return fn({ state, derived: derived as IslandDerived<TDerivedMap>, input, slots });
+      }
+
+      return Promise.all(
+        results.map(async (r) => {
+          try {
+            return {
+              key: r.key,
+              envelope: {
+                loading: false,
+                value: await Promise.resolve(r.result),
+                error: undefined,
+              } satisfies DerivedValue<unknown>,
+            };
+          } catch (err) {
+            return {
+              key: r.key,
+              envelope: {
+                loading: false,
+                value: undefined,
+                error: err instanceof Error ? err : new Error(String(err)),
+              } satisfies DerivedValue<unknown>,
+            };
+          }
+        }),
+      ).then((resolved) => {
+        const derived: Record<string, DerivedValue<unknown>> = {};
+        for (const r of resolved) {
+          derived[r.key] = r.envelope;
+        }
+        return fn({ state, derived: derived as IslandDerived<TDerivedMap>, input, slots });
+      });
+    }
+
+    // toString() is always sync — async deriveds fall back to loading: true.
+    // Safe for template literal interpolation where await is not possible.
+    function renderToStringSyncOnly(props?: Partial<TInput>): string {
       const input = resolveInput(props);
       const state = buildPlainState(input);
       const slots = makeSlotsProxy(true);
@@ -885,8 +990,6 @@ class IlhaBuilder<
       attachListeners();
 
       // ── Bind ──────────────────────────────────────────────────────────────
-      // Applied after initial render so elements exist in the DOM.
-      // Re-applied after every re-render inside the render effect below.
       let stopBindings = applyBindings(el, binds as BindEntry<TStateMap>[], state);
       cleanups.push(() => stopBindings());
 
@@ -930,7 +1033,6 @@ class IlhaBuilder<
         el.innerHTML = html;
         restoreSlots();
         attachListeners();
-        // Re-apply bindings now that new DOM elements exist
         stopBindings = applyBindings(el, binds as BindEntry<TStateMap>[], state);
       });
       cleanups.push(stopRender);
@@ -964,11 +1066,11 @@ class IlhaBuilder<
       };
     }
 
-    const island = function (props?: Partial<TInput>): string {
+    const island = function (props?: Partial<TInput>): string | Promise<string> {
       return renderToString(props);
     } as Island<TInput, TStateMap>;
 
-    island.toString = (props?: Partial<TInput>) => renderToString(props);
+    island.toString = (props?: Partial<TInput>) => renderToStringSyncOnly(props);
     island.mount = (el: Element, props?: Partial<TInput>) => mountIsland(el, props);
 
     return island;

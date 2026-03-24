@@ -1043,17 +1043,17 @@ describe("ilha.mount()", () => {
   describe(".derived()", () => {
     // ── SSR — async ──────────────────────────────────────────────────────────
 
-    it("SSR: async derived is always loading: true during SSR", () => {
+    it("SSR: async derived is always loading: true during SSR", async () => {
       const island = ilha
         .derived("data", async () => "resolved")
         .render(({ derived }) =>
           derived.data.loading ? "<p>loading</p>" : `<p>${derived.data.value}</p>`,
         );
 
-      expect(island()).toBe("<p>loading</p>");
+      expect(await island()).toBe("<p>resolved</p>");
     });
 
-    it("SSR: async derived.value and derived.error are undefined during SSR", () => {
+    it("SSR: async derived.value and derived.error are undefined during SSR", async () => {
       const island = ilha
         .derived("data", async () => 42)
         .render(({ derived }) => {
@@ -1061,16 +1061,16 @@ describe("ilha.mount()", () => {
           return `${d.loading}:${d.value}:${d.error}`;
         });
 
-      expect(island()).toBe("true:undefined:undefined");
+      expect(await island()).toBe("false:42:undefined");
     });
 
-    it("SSR: multiple async derived keys all start as loading", () => {
+    it("SSR: multiple async derived keys all start as loading", async () => {
       const island = ilha
         .derived("a", async () => 1)
         .derived("b", async () => 2)
         .render(({ derived }) => `${derived.a.loading}:${derived.b.loading}`);
 
-      expect(island()).toBe("true:true");
+      expect(await island()).toBe("false:false");
     });
 
     // ── SSR — sync ───────────────────────────────────────────────────────────
@@ -1107,7 +1107,7 @@ describe("ilha.mount()", () => {
       expect(island({ multiplier: 4 })).toBe("<p>40</p>");
     });
 
-    it("SSR: mixed sync and async derived — sync resolves, async is loading", () => {
+    it("SSR: mixed sync and async derived — sync resolves, async is loading", async () => {
       const island = ilha
         .state("count", 3)
         .derived("sync", ({ state }) => state.count() * 2)
@@ -1117,7 +1117,87 @@ describe("ilha.mount()", () => {
             `${derived.sync.loading}:${derived.sync.value}:${derived.async.loading}:${derived.async.value}`,
         );
 
-      expect(island()).toBe("false:6:true:undefined");
+      expect(await island()).toBe("false:6:false:9");
+    });
+
+    it("SSR: island() returns a Promise when async derived is present", () => {
+      const island = ilha
+        .derived("data", async () => 42)
+        .render(({ derived }) => `<p>${derived.data.value}</p>`);
+
+      const result = island();
+      expect(result).toBeInstanceOf(Promise);
+    });
+
+    it("SSR: island() returns a string when all derived are sync", () => {
+      const island = ilha
+        .state("count", 2)
+        .derived("doubled", ({ state }) => state.count() * 2)
+        .render(({ derived }) => `<p>${derived.doubled.value}</p>`);
+
+      const result = island();
+      expect(typeof result).toBe("string");
+      expect(result).toBe("<p>4</p>");
+    });
+
+    it("SSR: toString() keeps async derived in loading state", () => {
+      const island = ilha
+        .derived("data", async () => 42)
+        .render(({ derived }) =>
+          derived.data.loading ? "<p>loading</p>" : `<p>${derived.data.value}</p>`,
+        );
+
+      expect(island.toString()).toBe("<p>loading</p>");
+    });
+
+    it("SSR: template interpolation uses toString() fallback for async derived", () => {
+      const island = ilha
+        .derived("data", async () => "resolved")
+        .render(({ derived }) =>
+          derived.data.loading ? "<p>loading</p>" : `<p>${derived.data.value}</p>`,
+        );
+
+      expect(`<div>${island}</div>`).toBe("<div><p>loading</p></div>");
+    });
+
+    it("SSR: awaited async derived rejection populates error envelope", async () => {
+      const island = ilha
+        .derived("data", async () => {
+          throw new Error("boom");
+        })
+        .render(({ derived }) => {
+          if (derived.data.loading) return "<p>loading</p>";
+          if (derived.data.error) return `<p>error:${derived.data.error.message}</p>`;
+          return `<p>${derived.data.value}</p>`;
+        });
+
+      expect(await island()).toBe("<p>error:boom</p>");
+    });
+
+    it("SSR: awaited async non-Error throw is wrapped in Error", async () => {
+      const island = ilha
+        .derived("data", async () => {
+          throw "bad";
+        })
+        .render(({ derived }) => {
+          if (derived.data.loading) return "<p>loading</p>";
+          return `<p>${derived.data.error instanceof Error}</p>`;
+        });
+
+      expect(await island()).toBe("<p>true</p>");
+    });
+
+    it("SSR: toString() resolves sync derived but keeps async derived loading", () => {
+      const island = ilha
+        .state("count", 3)
+        .derived("sync", ({ state }) => state.count() * 2)
+        .derived("async", async ({ state }) => state.count() * 3)
+        .render(
+          ({ derived }) =>
+            `${derived.sync.loading}:${derived.sync.value}:${derived.async.loading}:${derived.async.value}`,
+        );
+
+      expect(island.toString()).toBe("false:6:true:undefined");
     });
 
     // ── Client — basic resolve ────────────────────────────────────────────────
@@ -1789,7 +1869,7 @@ describe("ilha.mount()", () => {
     it("client: transform coerces DOM string to number", () => {
       const island = ilha
         .state("age", 0)
-        .bind("[data-age]", "age", Number)
+        .bind("[data-age]", "age")
         .render(({ state }) => `<input type="text" data-age /><p>${state.age()}</p>`);
 
       const el = makeEl();

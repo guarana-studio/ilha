@@ -29,7 +29,7 @@ const counter = ilha
     `,
   );
 
-// SSR — returns an HTML string
+// SSR — sync islands return a string immediately
 counter({ count: 5 }); // → "<p>5</p><button data-inc>+</button>"
 
 // Client — mount onto a DOM element
@@ -95,8 +95,10 @@ The DOM value is automatically coerced to match the type of the state key — no
 
 ```ts
 .state("count", 0)
-.bind("[data-count]", "count")  // input string coerced to number automatically
+.bind("[data-count]", "count") // input string coerced to number automatically
 ```
+
+If the input is cleared and the state is a number, the value falls back to `0` rather than `NaN`.
 
 Element types and their behaviour:
 
@@ -107,7 +109,24 @@ Element types and their behaviour:
 | `input[type=checkbox]`   | `change`           | `.checked`       |
 | `select`, `textarea`     | `change` / `input` | `.value`         |
 
+> **Note:** `input[type=radio]` groups are not currently supported by `.bind()`.
+
 `.bind()` is a no-op during SSR — it only activates on mount.
+
+### Stale element references
+
+Every time bound state changes, the island re-renders and replaces `el.innerHTML`. Any element reference captured before a state change becomes stale. Always re-query from `el` after dispatching events or triggering state changes:
+
+```ts
+// ✗ — reference captured before re-render, may be a detached element
+const input = el.querySelector("[data-q]")!;
+input.dispatchEvent(new Event("input"));
+input.value; // stale
+
+// ✓ — always re-query after a state-changing interaction
+el.querySelector<HTMLInputElement>("[data-q]")!.dispatchEvent(new Event("input"));
+el.querySelector<HTMLInputElement>("[data-q]")!.value; // fresh
+```
 
 ## Derived data
 
@@ -149,6 +168,36 @@ const pokemon = ilha
   });
 ```
 
+### Async SSR
+
+On the server, islands with async derived values can be used in two ways:
+
+- **`await island()`** — resolves all async derived values before rendering final HTML
+- **`island.toString()`** or implicit template interpolation — stays synchronous and uses the loading fallback for async derived values
+
+```ts
+const page = ilha
+  .derived("user", async () => ({ name: "Ada" }))
+  .render(({ derived }) => {
+    if (derived.user.loading) return "<p>Loading…</p>";
+    if (derived.user.error) return `<p>Error: ${derived.user.error.message}</p>`;
+    return `<p>${derived.user.value!.name}</p>`;
+  });
+
+// async SSR
+await page(); // → "<p>Ada</p>"
+
+// sync fallback
+page.toString(); // → "<p>Loading…</p>"
+`${page}`; // → "<p>Loading…</p>"
+```
+
+This keeps SSR flexible:
+
+- sync islands remain zero-overhead and return a plain string
+- async islands can be awaited when the server runtime supports async rendering
+- template literals remain safe and synchronous
+
 ### Derived envelope
 
 Every `.derived()` value — sync or async — is accessed as:
@@ -158,8 +207,6 @@ derived.key.loading; // boolean — always false for sync
 derived.key.value; // T | undefined
 derived.key.error; // Error | undefined — always undefined for sync
 ```
-
-During SSR, async derived is always `{ loading: true, value: undefined, error: undefined }`. Sync derived resolves immediately during SSR too.
 
 ### Derived context
 
@@ -192,14 +239,18 @@ Or declaratively in HTML:
 
 ## Shared state
 
+`context()` creates a module-level signal shared across all islands. The same key always returns the same signal — the initial value from the first registration wins.
+
 ```ts
 import { context } from "ilha";
 
-const theme = context("theme", "light"); // module-level shared signal
+const theme = context("theme", "light");
 
 theme(); // → "light"
 theme("dark"); // updates all subscribed islands
 ```
+
+> **Note:** Context signals are global for the lifetime of the page. There is no per-instance scoping or cleanup.
 
 ## Mounting
 
@@ -237,6 +288,12 @@ html`<p>${userInput}</p>`; // escaped
 html`<p>${raw("<b>bold</b>")}</p>`; // explicit raw passthrough
 html`<p>${state.count}</p>`; // signal accessor — calls getter + escapes
 ```
+
+## Known limitations
+
+- `input[type=radio]` groups are not supported by `.bind()`
+- `context()` signals are global with no scoping or cleanup mechanism
+- Implicit string interpolation of islands (`${island}`) is always synchronous, so async derived values fall back to `loading`
 
 ## License
 
