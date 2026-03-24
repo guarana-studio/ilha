@@ -1,0 +1,4 @@
+bun run fmt
+bun run lint
+bun run test
+git update-index --again

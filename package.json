@@ -1,0 +1,27 @@
+{
+  "name": "ilha",
+  "private": true,
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "test": "bun test",
+    "playground": "bun playground/index.html",
+    "lint": "oxlint",
+    "fmt": "oxfmt",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "alien-signals": "^3.1.2"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.8.7",
+    "@types/bun": "latest",
+    "husky": "^9.1.7",
+    "oxfmt": "^0.41.0",
+    "oxlint": "^1.56.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
