@@ -41,9 +41,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lib-dist
-          path: |
-            dist/
-            packages/*/dist/
+          path: packages/*/dist/
           retention-days: 1
 
   test-and-publish:
@@ -65,11 +63,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: lib-dist
-          path: .
+          path: packages/
       - name: Test
         run: bun run test
       - name: Publish nightly release
-        run: bunx pkg-pr-new publish './packages/*' --bun
+        run: bunx pkg-pr-new publish './packages/*'
 
   docs:
     name: Build docs
@@ -96,7 +94,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: lib-dist
-          path: .
+          path: packages/
       - name: Build Website
         run: bun run build
         working-directory: apps/website
