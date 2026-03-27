@@ -41,6 +41,9 @@ jobs:
         run: bun run build
       - name: Test
         run: bun run test
+      - name: Prepack ilha
+        run: npm pack
+        working-directory: packages/ilha
       - name: Publish nightly release
         run: bunx pkg-pr-new publish './packages/*'
       - name: Upload build artifact
