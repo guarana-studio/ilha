@@ -26,6 +26,8 @@ jobs:
     needs: install
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
       - name: Restore node_modules
         uses: actions/cache@v4
@@ -40,7 +42,7 @@ jobs:
       - name: Test
         run: bun run test
       - name: Publish nightly release
-        run: bunx pkg-pr-new publish --bun './packages/*'
+        run: bunx pkg-pr-new publish './packages/*'
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
