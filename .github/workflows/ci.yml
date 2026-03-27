@@ -40,7 +40,9 @@ jobs:
       - name: Test
         run: bun run test
       - name: Publish nightly release
-        run: bunx pkg-pr-new publish './packages/*'
+        run: |
+          echo "gitdir: $(pwd)/.git" > packages/ilha/.git
+          bunx pkg-pr-new publish './packages/*'
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
