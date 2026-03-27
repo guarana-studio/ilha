@@ -39,8 +39,8 @@ jobs:
         run: bun run build
       - name: Test
         run: bun run test
-      - name: Disable npm git checks for monorepo packages
-        run: echo "git-checks=false" >> packages/ilha/.npmrc
+      - name: Disable npm git checks
+        run: npm config set git-checks false
       - name: Publish nightly release
         run: bunx pkg-pr-new publish './packages/*'
       - name: Upload build artifact
