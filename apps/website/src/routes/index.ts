@@ -89,9 +89,9 @@ const codeExample = `const counter = ilha
   \`);`;
 
 const primaryLinks = [
-  { href: "/docs/#ilha", label: "Docs", className: navButtonClass },
+  { href: "/docs", label: "Docs", className: navButtonClass },
   {
-    href: "/docs/#installation",
+    href: "/docs",
     label: "Get started",
     className: `${filledButtonClass} px-4 py-2 text-sm font-medium`,
   },
@@ -99,12 +99,12 @@ const primaryLinks = [
 
 const heroLinks = [
   {
-    href: "/docs/#installation",
+    href: "/docs",
     label: "Read installation",
     className: `${filledButtonClass} w-full px-5 py-3 text-center text-sm font-semibold sm:w-auto`,
   },
   {
-    href: "/docs/#builder-api",
+    href: "/docs",
     label: "Explore builder API",
     className: `${outlinedButtonClass} w-full text-center sm:w-auto`,
   },
