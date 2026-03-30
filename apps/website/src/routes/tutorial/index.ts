@@ -12,9 +12,9 @@ const code = {
     <div data-ilha="hello"></div>
   `,
   script: dedent`
-    import ilha, { html, mount } from "ilha";
+    import ilha, { html, mount, context } from "ilha";
 
-    const name = ilha.context("name", "Alice");
+    const name = context("name", "Alice");
 
     const nameInput = ilha
       .bind("[data-name]", name)

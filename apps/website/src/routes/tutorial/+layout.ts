@@ -55,8 +55,6 @@ const TutorialLayout = ({ content, code }: TutorialLayoutProps) => {
   const contentHtml = md.render(content);
 
   const Editor = ilha
-    // .bind("[data-template]", template)
-    // .bind("[data-script]", script)
     .state<"script" | "template">("currentTab", "script")
     .state<ShikiEditorHandle>("editor", undefined)
     .onMount(({ state }) => {
