@@ -2,18 +2,18 @@
   "name": "hono",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "dev": "tsdown --watch --on-success \"node dist/server.mjs\"",
+    "build": "tsdown",
+    "start": "node dist/server.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.12",
     "hono": "^4.12.9",
-    "ilha": "https://pkg.pr.new/guarana-studio/ilha@e721ddd"
+    "ilha": "https://pkg.pr.new/guarana-studio/ilha@c9bcbd1"
   },
   "devDependencies": {
     "@types/node": "^20.11.17",
-    "tsx": "^4.7.1",
+    "tsdown": "^0.21.7",
     "typescript": "^5.8.3"
   }
 }
