@@ -48,6 +48,11 @@
   }
 }
 
+[data-ilha],
+[data-ilha-slot] {
+  display: contents;
+}
+
 body {
   margin: 0;
 }
