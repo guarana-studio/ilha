@@ -12,3 +12,7 @@
 [data-ilha-slot] {
   display: contents;
 }
+
+.shiki {
+  @apply p-2;
+}

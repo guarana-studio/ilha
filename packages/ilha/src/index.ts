@@ -1240,6 +1240,22 @@ const ilha = Object.assign(rootBuilder, {
   context: ilhaContext,
 });
 
+export function type<TInput, TOutput = TInput>(
+  coerce?: (input: TInput) => TOutput,
+): StandardSchemaV1<TInput, TOutput> {
+  return {
+    "~standard": {
+      version: 1,
+      vendor: "ilha",
+      validate(value: unknown) {
+        return {
+          value: coerce ? coerce(value as TInput) : (value as TOutput),
+        };
+      },
+    },
+  };
+}
+
 export const html = ilhaHtml;
 export const raw = ilhaRaw;
 export const mount = mountAll;

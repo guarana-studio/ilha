@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { z } from "zod";
 
 import type { SlotAccessor } from "./index";
-import ilha, { html, raw, mount, from, context } from "./index";
+import ilha, { html, raw, mount, from, context, type } from "./index";
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -2471,6 +2471,144 @@ describe("ilha.mount()", () => {
       expect(log).toContain("destroy:y");
       cleanup(elA);
       cleanup(elB);
+    });
+  });
+
+  describe("type() utility", () => {
+    describe("schema shape", () => {
+      it("returns a valid StandardSchemaV1 object", () => {
+        const schema = type<{ name: string }>();
+        expect(schema).toHaveProperty("~standard");
+        expect(schema["~standard"].version).toBe(1);
+        expect(schema["~standard"].vendor).toBe("ilha");
+        expect(typeof schema["~standard"].validate).toBe("function");
+      });
+
+      it("validate returns a success result with the same value", () => {
+        const schema = type<{ name: string }>();
+        const input = { name: "hello" };
+        const result = schema["~standard"].validate(input);
+        expect(result).toEqual({ value: input });
+      });
+
+      it("validate result has no issues property", () => {
+        const schema = type<number>();
+        const result = schema["~standard"].validate(42) as { value: unknown; issues?: unknown };
+        expect(result.issues).toBeUndefined();
+      });
+
+      it("validate is synchronous (not a Promise)", () => {
+        const schema = type<string>();
+        const result = schema["~standard"].validate("hello");
+        expect(result instanceof Promise).toBe(false);
+      });
+    });
+
+    describe("pass-through behaviour (no coerce)", () => {
+      it("passes through a string", () => {
+        const schema = type<string>();
+        const result = schema["~standard"].validate("world") as { value: unknown };
+        expect(result.value).toBe("world");
+      });
+
+      it("passes through a number", () => {
+        const schema = type<number>();
+        const result = schema["~standard"].validate(99) as { value: unknown };
+        expect(result.value).toBe(99);
+      });
+
+      it("passes through null", () => {
+        const schema = type<null>();
+        const result = schema["~standard"].validate(null) as { value: unknown };
+        expect(result.value).toBeNull();
+      });
+
+      it("passes through undefined", () => {
+        const schema = type<undefined>();
+        const result = schema["~standard"].validate(undefined) as { value: unknown };
+        expect(result.value).toBeUndefined();
+      });
+
+      it("passes through an object by reference", () => {
+        const schema = type<{ x: number }>();
+        const input = { x: 1 };
+        const result = schema["~standard"].validate(input) as { value: unknown };
+        expect(result.value).toBe(input); // same reference
+      });
+
+      it("passes through an array by reference", () => {
+        const schema = type<number[]>();
+        const input = [1, 2, 3];
+        const result = schema["~standard"].validate(input) as { value: unknown };
+        expect(result.value).toBe(input);
+      });
+    });
+
+    describe("coerce function", () => {
+      it("applies coerce to the input value", () => {
+        const schema = type<string, number>((s) => s.length);
+        const result = schema["~standard"].validate("hello") as { value: unknown };
+        expect(result.value).toBe(5);
+      });
+
+      it("coerce can return a new object", () => {
+        const schema = type<{ raw: string }, { raw: string; trimmed: string }>(({ raw }) => ({
+          raw,
+          trimmed: raw.trim(),
+        }));
+        const result = schema["~standard"].validate({ raw: "  hi  " }) as { value: unknown };
+        expect(result.value).toEqual({ raw: "  hi  ", trimmed: "hi" });
+      });
+
+      it("coerce returning undefined passes through as undefined", () => {
+        const schema = type<string, undefined>(() => undefined);
+        const result = schema["~standard"].validate("anything") as { value: unknown };
+        expect(result.value).toBeUndefined();
+      });
+
+      it("each call invokes coerce exactly once", () => {
+        let calls = 0;
+        const schema = type<number, number>((n) => {
+          calls++;
+          return n * 2;
+        });
+        schema["~standard"].validate(3);
+        schema["~standard"].validate(5);
+        expect(calls).toBe(2);
+      });
+    });
+
+    describe("multiple calls / independence", () => {
+      it("two schemas created from type() are independent objects", () => {
+        const a = type<string>();
+        const b = type<string>();
+        expect(a).not.toBe(b);
+      });
+
+      it("validate can be called multiple times on the same schema", () => {
+        const schema = type<number>();
+        const r1 = schema["~standard"].validate(1) as { value: unknown };
+        const r2 = schema["~standard"].validate(2) as { value: unknown };
+        expect(r1.value).toBe(1);
+        expect(r2.value).toBe(2);
+      });
+    });
+
+    describe("compatibility with IlhaBuilder.input()", () => {
+      it("type() result is accepted by .input() without throwing", async () => {
+        const schema = type<{ msg: string }>();
+        expect(() => {
+          ilha.input(schema).render(({ input }) => `<p>${input.msg}</p>`);
+        }).not.toThrow();
+      });
+
+      it("island renders with props validated through type()", async () => {
+        const island = ilha
+          .input(type<{ label: string }>())
+          .render(({ input }) => `<span>${input.label}</span>`);
+        const html = await island({ label: "test" });
+        expect(html).toContain("test");
+      });
     });
   });
 });
