@@ -1,5 +1,4 @@
 import { signal, effect, setActiveSub } from "alien-signals";
-import { morphInner } from "morphlex";
 
 // ─────────────────────────────────────────────
 // Standard Schema V1 (inlined, type-only)
@@ -38,6 +37,443 @@ declare namespace StandardSchemaV1 {
   type InferOutput<Schema extends StandardSchemaV1> = NonNullable<
     Schema["~standard"]["types"]
   >["output"];
+}
+
+// ─────────────────────────────────────────────
+// Inlined morphlex (browser-only, subset used by ilha)
+// ─────────────────────────────────────────────
+
+const SUPPORTS_MOVE_BEFORE = typeof Element !== "undefined" && "moveBefore" in Element.prototype;
+const ELEMENT_NODE_TYPE = 1;
+const TEXT_NODE_TYPE = 3;
+const TREE_WALKER_SHOW_ELEMENT = 1;
+
+const Operation = { EqualNode: 0, SameElement: 1, SameNode: 2 } as const;
+type MorphOperation = (typeof Operation)[keyof typeof Operation];
+
+type IdSetMap = WeakMap<Node, Set<string>>;
+type IdArrayMap = WeakMap<Node, Array<string>>;
+type CandidateIdBucket = number | Array<number>;
+
+function morphMoveBefore(
+  parent: ParentNode,
+  node: ChildNode,
+  insertionPoint: ChildNode | null,
+): void {
+  if (node === insertionPoint) return;
+  if (node.parentNode === parent) {
+    if (node.nextSibling === insertionPoint) return;
+    if (SUPPORTS_MOVE_BEFORE) {
+      (parent as ParentNode & { moveBefore(n: ChildNode, b: ChildNode | null): void }).moveBefore(
+        node,
+        insertionPoint,
+      );
+      return;
+    }
+  }
+  parent.insertBefore(node, insertionPoint);
+}
+
+function morphIsWhitespaceTextNode(node: Node): boolean {
+  if (node.nodeType !== TEXT_NODE_TYPE) return false;
+  const value = node.nodeValue;
+  if (!value) return true;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code === 32 || code === 9 || code === 10 || code === 13 || code === 12) continue;
+    if (code <= 127) return false;
+    return value.trim() === "";
+  }
+  return true;
+}
+
+function morphCanMorphInPlace(from: Element, to: Element): boolean {
+  if (from.localName !== to.localName || from.namespaceURI !== to.namespaceURI) return false;
+  if (
+    from.localName === "input" &&
+    (from as HTMLInputElement).type !== (to as HTMLInputElement).type
+  )
+    return false;
+  return true;
+}
+
+function morphCanSoftMatchByTagName(el: Element, hasDescIdMarker: boolean): boolean {
+  if (el.id !== "") return false;
+  const ln = el.localName;
+  if (ln === "input" || ln === "textarea" || ln === "select") return false;
+  if (el.hasAttribute("name") || el.hasAttribute("href") || el.hasAttribute("src")) return false;
+  if (hasDescIdMarker) return false;
+  return true;
+}
+
+function morphForEachDescendantWithId(node: ParentNode, cb: (el: Element) => void): void {
+  const walker = (node as Node).ownerDocument!.createTreeWalker(
+    node as Node,
+    TREE_WALKER_SHOW_ELEMENT,
+  );
+  let cur = walker.nextNode();
+  while (cur) {
+    const el = cur as Element;
+    if (el.id !== "") cb(el);
+    cur = walker.nextNode();
+  }
+}
+
+function morphLIS(seq: Array<number | undefined>): Array<number> {
+  const n = seq.length;
+  if (n === 0) return [];
+  const smallestEnding = new Array<number>(n);
+  const indices = new Array<number>(n);
+  const prev = new Int32Array(n);
+  prev.fill(-1);
+  let lisLength = 0;
+  for (let i = 0; i < n; i++) {
+    const val = seq[i];
+    if (val === undefined) continue;
+    let left = 0,
+      right = lisLength;
+    while (left < right) {
+      const mid = (left + right) >> 1;
+      if (smallestEnding[mid]! < val) left = mid + 1;
+      else right = mid;
+    }
+    prev[i] = left > 0 ? indices[left - 1]! : -1;
+    smallestEnding[left] = val;
+    indices[left] = i;
+    if (left === lisLength) lisLength++;
+  }
+  const result = new Array<number>(lisLength);
+  let curr = indices[lisLength - 1]!;
+  for (let i = lisLength - 1; i >= 0; i--) {
+    result[i] = curr;
+    curr = prev[curr]!;
+  }
+  return result;
+}
+
+class MorphEngine {
+  readonly #idArrayMap: IdArrayMap = new WeakMap();
+  readonly #idSetMap: IdSetMap = new WeakMap();
+
+  visitChildNodes(from: Element, to: Element): void {
+    const parent = from;
+    const fromChildren = Array.from(from.childNodes) as ChildNode[];
+    const toChildren = Array.from(to.childNodes) as ChildNode[];
+
+    const candidateNodeIndices: number[] = [];
+    const candidateElIndices: number[] = [];
+    const candidateElWithIdIndices: number[] = [];
+    const candidateElIndicesById = new Map<string, CandidateIdBucket>();
+    const unmatchedNodeIndices: number[] = [];
+    const unmatchedElIndices: number[] = [];
+    const whitespaceIndices: number[] = [];
+
+    const candidateNodeActive = new Uint8Array(fromChildren.length);
+    const candidateElActive = new Uint8Array(fromChildren.length);
+    const candidateElWithIdActive = new Uint8Array(fromChildren.length);
+    const unmatchedNodeActive = new Uint8Array(toChildren.length);
+    const unmatchedElActive = new Uint8Array(toChildren.length);
+
+    const matches: number[] = [];
+    const op: MorphOperation[] = [];
+    const toNodeType: number[] = [];
+    const fromNodeType: number[] = [];
+    const toLocalName: string[] = [];
+    const fromLocalName: string[] = [];
+    const toNS: (string | null)[] = [];
+    const fromNS: (string | null)[] = [];
+
+    for (let i = 0; i < fromChildren.length; i++) {
+      const c = fromChildren[i]!;
+      const t = c.nodeType;
+      fromNodeType[i] = t;
+      if (t === ELEMENT_NODE_TYPE) {
+        const el = c as Element;
+        fromLocalName[i] = el.localName;
+        fromNS[i] = el.namespaceURI;
+        if (el.id !== "") {
+          candidateElWithIdActive[i] = 1;
+          candidateElWithIdIndices.push(i);
+          const b = candidateElIndicesById.get(el.id);
+          if (b === undefined) candidateElIndicesById.set(el.id, i);
+          else if (Array.isArray(b)) b.push(i);
+          else candidateElIndicesById.set(el.id, [b, i]);
+        } else {
+          candidateElActive[i] = 1;
+          candidateElIndices.push(i);
+        }
+      } else if (morphIsWhitespaceTextNode(c)) {
+        whitespaceIndices.push(i);
+      } else {
+        candidateNodeActive[i] = 1;
+        candidateNodeIndices.push(i);
+      }
+    }
+
+    for (let i = 0; i < toChildren.length; i++) {
+      const n = toChildren[i]!;
+      const t = n.nodeType;
+      toNodeType[i] = t;
+      if (t === ELEMENT_NODE_TYPE) {
+        const el = n as Element;
+        toLocalName[i] = el.localName;
+        toNS[i] = el.namespaceURI;
+        unmatchedElActive[i] = 1;
+        unmatchedElIndices.push(i);
+      } else if (!morphIsWhitespaceTextNode(n)) {
+        unmatchedNodeActive[i] = 1;
+        unmatchedNodeIndices.push(i);
+      }
+    }
+
+    // Match by isEqualNode
+    for (const ui of unmatchedElIndices) {
+      const ln = toLocalName[ui],
+        el = toChildren[ui] as Element;
+      for (const ci of candidateElIndices) {
+        if (!candidateElActive[ci]) continue;
+        if (ln !== fromLocalName[ci] || toNS[ui] !== fromNS[ci]) continue;
+        if ((fromChildren[ci] as Element).isEqualNode(el)) {
+          matches[ui] = ci;
+          op[ui] = Operation.EqualNode;
+          candidateElActive[ci] = 0;
+          unmatchedElActive[ui] = 0;
+          break;
+        }
+      }
+    }
+
+    // Match by exact id
+    for (const ui of unmatchedElIndices) {
+      if (!unmatchedElActive[ui]) continue;
+      const el = toChildren[ui] as Element;
+      if (el.id === "") continue;
+      const bucket = candidateElIndicesById.get(el.id);
+      if (bucket === undefined) continue;
+      const indices = Array.isArray(bucket) ? bucket : [bucket];
+      for (const ci of indices) {
+        if (!candidateElWithIdActive[ci]) continue;
+        if (toLocalName[ui] === fromLocalName[ci] && toNS[ui] === fromNS[ci]) {
+          matches[ui] = ci;
+          op[ui] = Operation.SameElement;
+          candidateElWithIdActive[ci] = 0;
+          unmatchedElActive[ui] = 0;
+          break;
+        }
+      }
+    }
+
+    // Match by idArray vs idSet
+    for (const ui of unmatchedElIndices) {
+      if (!unmatchedElActive[ui]) continue;
+      const el = toChildren[ui] as Element;
+      const idArray = this.#idArrayMap.get(el);
+      if (!idArray) continue;
+      outer: for (const ci of candidateElIndices) {
+        if (!candidateElActive[ci]) continue;
+        const cand = fromChildren[ci] as Element;
+        if (toLocalName[ui] !== fromLocalName[ci] || toNS[ui] !== fromNS[ci]) continue;
+        const idSet = this.#idSetMap.get(cand);
+        if (idSet) {
+          for (const id of idArray) {
+            if (idSet.has(id)) {
+              matches[ui] = ci;
+              op[ui] = Operation.SameElement;
+              candidateElActive[ci] = 0;
+              unmatchedElActive[ui] = 0;
+              break outer;
+            }
+          }
+        }
+      }
+    }
+
+    // Match by heuristics (name/href/src)
+    for (const ui of unmatchedElIndices) {
+      if (!unmatchedElActive[ui]) continue;
+      const el = toChildren[ui] as Element;
+      const name = el.getAttribute("name"),
+        href = el.getAttribute("href"),
+        src = el.getAttribute("src");
+      for (const ci of candidateElIndices) {
+        if (!candidateElActive[ci]) continue;
+        const cand = fromChildren[ci] as Element;
+        if (
+          toLocalName[ui] === fromLocalName[ci] &&
+          toNS[ui] === fromNS[ci] &&
+          ((name && name === cand.getAttribute("name")) ||
+            (href && href === cand.getAttribute("href")) ||
+            (src && src === cand.getAttribute("src")))
+        ) {
+          matches[ui] = ci;
+          op[ui] = Operation.SameElement;
+          candidateElActive[ci] = 0;
+          unmatchedElActive[ui] = 0;
+          break;
+        }
+      }
+    }
+
+    // Match by tagName (soft)
+    for (const ui of unmatchedElIndices) {
+      if (!unmatchedElActive[ui]) continue;
+      const el = toChildren[ui] as Element;
+      if (!morphCanSoftMatchByTagName(el, this.#idArrayMap.has(el))) continue;
+      for (const ci of candidateElIndices) {
+        if (!candidateElActive[ci]) continue;
+        const cand = fromChildren[ci] as Element;
+        if (!morphCanSoftMatchByTagName(cand, this.#idSetMap.has(cand))) continue;
+        if (toLocalName[ui] === fromLocalName[ci] && toNS[ui] === fromNS[ci]) {
+          matches[ui] = ci;
+          op[ui] = Operation.SameElement;
+          candidateElActive[ci] = 0;
+          unmatchedElActive[ui] = 0;
+          break;
+        }
+      }
+    }
+
+    // Match nodes by isEqualNode
+    for (const ui of unmatchedNodeIndices) {
+      const node = toChildren[ui]!;
+      for (const ci of candidateNodeIndices) {
+        if (!candidateNodeActive[ci]) continue;
+        if (fromChildren[ci]!.isEqualNode(node)) {
+          matches[ui] = ci;
+          op[ui] = Operation.EqualNode;
+          candidateNodeActive[ci] = 0;
+          unmatchedNodeActive[ui] = 0;
+          break;
+        }
+      }
+    }
+
+    // Match nodes by nodeType
+    for (const ui of unmatchedNodeIndices) {
+      if (!unmatchedNodeActive[ui]) continue;
+      for (const ci of candidateNodeIndices) {
+        if (!candidateNodeActive[ci]) continue;
+        if (toNodeType[ui] === fromNodeType[ci]) {
+          matches[ui] = ci;
+          op[ui] = Operation.SameNode;
+          candidateNodeActive[ci] = 0;
+          unmatchedNodeActive[ui] = 0;
+          break;
+        }
+      }
+    }
+
+    // Remove unmatched candidates
+    for (const ci of candidateNodeIndices) if (candidateNodeActive[ci]) fromChildren[ci]!.remove();
+    for (const ci of whitespaceIndices) fromChildren[ci]!.remove();
+    for (const ci of candidateElIndices) if (candidateElActive[ci]) fromChildren[ci]!.remove();
+    for (const ci of candidateElWithIdIndices)
+      if (candidateElWithIdActive[ci]) fromChildren[ci]!.remove();
+
+    // LIS — nodes that don't need to move
+    const lisIndices = morphLIS(matches);
+    const shouldNotMove: boolean[] = new Array(fromChildren.length);
+    for (const li of lisIndices) shouldNotMove[matches[li]!] = true;
+
+    let insertionPoint: ChildNode | null = parent.firstChild;
+    for (let i = 0; i < toChildren.length; i++) {
+      const node = toChildren[i]!;
+      const mi = matches[i];
+      if (mi !== undefined) {
+        const match = fromChildren[mi]!;
+        if (!shouldNotMove[mi]) morphMoveBefore(parent, match, insertionPoint);
+        const operation = op[i]!;
+        if (operation === Operation.SameElement || operation === Operation.SameNode) {
+          this.#morphOneToOne(match, node);
+        }
+        // EqualNode: nodes are identical, no further work needed
+        insertionPoint = match.nextSibling;
+      } else {
+        parent.insertBefore(node, insertionPoint);
+        insertionPoint = node.nextSibling;
+      }
+    }
+  }
+
+  #morphOneToOne(from: ChildNode, to: ChildNode): void {
+    if (from === to || from.isEqualNode(to)) return;
+    if (from.nodeType === ELEMENT_NODE_TYPE && to.nodeType === ELEMENT_NODE_TYPE) {
+      if (morphCanMorphInPlace(from as Element, to as Element)) {
+        this.#morphMatchingElements(from as Element, to as Element);
+      } else {
+        from.replaceWith(to);
+      }
+    } else {
+      const fv = from.nodeValue,
+        tv = to.nodeValue;
+      if (from.nodeType === to.nodeType && fv !== null && tv !== null) from.nodeValue = tv;
+      else from.replaceWith(to);
+    }
+  }
+
+  prepare(from: ParentNode, to: ParentNode): void {
+    this.#mapIdSets(from);
+    this.#mapIdArrays(to);
+  }
+
+  #morphMatchingElements(from: Element, to: Element): void {
+    this.#visitAttributes(from, to);
+    if (from.localName === "textarea") {
+      const newText = to.textContent ?? "";
+      if (from.textContent !== newText) from.textContent = newText;
+      (from as HTMLTextAreaElement).value = (from as HTMLTextAreaElement).defaultValue;
+    } else if (from.hasChildNodes() || to.hasChildNodes()) {
+      this.visitChildNodes(from, to);
+    }
+  }
+
+  #visitAttributes(from: Element, to: Element): void {
+    from.removeAttribute("morphlex-dirty");
+    for (const { name, value } of to.attributes) {
+      if (from.getAttribute(name) !== value) from.setAttribute(name, value);
+    }
+    for (const { name } of Array.from(from.attributes)) {
+      if (!to.hasAttribute(name)) from.removeAttribute(name);
+    }
+  }
+
+  #mapIdArrays(node: ParentNode): void {
+    morphForEachDescendantWithId(node, (el) => {
+      let cur: Element | null = el;
+      while (cur) {
+        const arr = this.#idArrayMap.get(cur);
+        if (arr) arr.push(el.id);
+        else this.#idArrayMap.set(cur, [el.id]);
+        if (cur === node) break;
+        cur = cur.parentElement;
+      }
+    });
+  }
+
+  #mapIdSets(node: ParentNode): void {
+    morphForEachDescendantWithId(node, (el) => {
+      let cur: Element | null = el;
+      while (cur) {
+        const s = this.#idSetMap.get(cur);
+        if (s) s.add(el.id);
+        else this.#idSetMap.set(cur, new Set([el.id]));
+        if (cur === node) break;
+        cur = cur.parentElement;
+      }
+    });
+  }
+}
+
+function morphInner(from: Element, to: Element): void {
+  if (from.localName !== to.localName || from.namespaceURI !== to.namespaceURI)
+    throw new Error("[ilha] morph: elements must match");
+  for (const input of from.querySelectorAll("input")) {
+    if (input.value !== input.defaultValue || input.checked !== input.defaultChecked)
+      input.setAttribute("morphlex-dirty", "");
+  }
+  const engine = new MorphEngine();
+  engine.prepare(from, to);
+  engine.visitChildNodes(from, to);
 }
 
 // ─────────────────────────────────────────────
